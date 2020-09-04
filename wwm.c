@@ -19,16 +19,15 @@ int main (int argc, char **argv)
     screen = xcb_setup_roots_iterator(xcb_get_setup(dpy)).data;
     root = screen->root;
 
-    xcb_grab_key(dpy, 1, root, XCB_MOD_MASK_2, XCB_NO_SYMBOL,
-                 XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
-
-    xcb_grab_button(dpy, 0, root, XCB_EVENT_MASK_BUTTON_PRESS | 
-				XCB_EVENT_MASK_BUTTON_RELEASE, XCB_GRAB_MODE_ASYNC, 
-				XCB_GRAB_MODE_ASYNC, root, XCB_NONE, 1, XCB_MOD_MASK_1);
-
-    xcb_grab_button(dpy, 0, root, XCB_EVENT_MASK_BUTTON_PRESS | 
-				XCB_EVENT_MASK_BUTTON_RELEASE, XCB_GRAB_MODE_ASYNC, 
-				XCB_GRAB_MODE_ASYNC, root, XCB_NONE, 3, XCB_MOD_MASK_1);
+    xcb_grab_key(dpy, 1, screen->root, XCB_MOD_MASK_1, XCB_NO_SYMBOL,
+        XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+    xcb_grab_button(dpy, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS | 
+        XCB_EVENT_MASK_BUTTON_RELEASE, XCB_GRAB_MODE_ASYNC, 
+        XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, 1, XCB_MOD_MASK_1);
+    xcb_grab_button(dpy, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS | 
+        XCB_EVENT_MASK_BUTTON_RELEASE, XCB_GRAB_MODE_ASYNC, 
+        XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, 3, XCB_MOD_MASK_1);
+	
     xcb_flush(dpy);
 
     for (;;)
