@@ -1,21 +1,22 @@
+#include <stdlib.h>
 #include <xcb/xcb.h>
 
-int main (int argc, char **argv)
+xcb_connection_t *dpy;
+xcb_screen_t *screen;
+
+// Connect to X server, initialize screen, grab keys and buttons
+void setup(void)
 {
+    int screen_num;
+    dpy = xcb_connect(NULL, &screen_num);
+    if (xcb_connection_has_error(dpy)) exit(1);
 
-    uint32_t values[3];
+    xcb_screen_iterator_t iter = xcb_setup_roots_iterator(xcb_get_setup(dpy));
 
-	xcb_connection_t *dpy;
-	xcb_screen_t *screen;
-	xcb_drawable_t win;
+    for (int i = 0; i < screen_num; i++)
+        xcb_screen_next(&iter);
 
-	xcb_generic_event_t *ev;
-	xcb_get_geometry_reply_t *geom;
-
-    dpy = xcb_connect(NULL, NULL);
-    if (xcb_connection_has_error(dpy)) return 1;
-
-    screen = xcb_setup_roots_iterator(xcb_get_setup(dpy)).data;
+    screen = iter.data;
 
     xcb_grab_key(dpy, 1, screen->root, XCB_MOD_MASK_1, XCB_NO_SYMBOL,
         XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
@@ -25,64 +26,168 @@ int main (int argc, char **argv)
     xcb_grab_button(dpy, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS | 
         XCB_EVENT_MASK_BUTTON_RELEASE, XCB_GRAB_MODE_ASYNC, 
         XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, 3, XCB_MOD_MASK_1);
-	
-    xcb_flush(dpy);
+}
+
+// Raises window and sets input focus
+void raise_window(xcb_window_t window)
+{
+    const uint32_t values[] = { XCB_STACK_MODE_ABOVE };
+    xcb_configure_window(dpy, window, XCB_CONFIG_WINDOW_STACK_MODE, values);
+    xcb_set_input_focus(dpy, XCB_INPUT_FOCUS_PARENT, window, XCB_CURRENT_TIME);
+}
+
+// Creates a clone of a window, used for resizing
+xcb_window_t duplicate_window(xcb_window_t window, xcb_get_geometry_reply_t *geom)
+{
+    const xcb_window_t duplicate = xcb_generate_id(dpy);
+
+    const uint32_t values[] = { 0 };
+    xcb_create_window(dpy, XCB_COPY_FROM_PARENT, duplicate, screen->root,
+        geom->x, geom->y, geom->width, geom->height, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+        screen->root_visual, XCB_CW_BACK_PIXEL, values);
+
+    return duplicate;
+}
+
+void motion_notify(xcb_window_t window, xcb_button_t button, xcb_get_geometry_reply_t *geom, int16_t *x, int16_t *y)
+{
+    // Update pointer location
+    xcb_query_pointer_reply_t *pointer;
+    pointer = xcb_query_pointer_reply(dpy, xcb_query_pointer(dpy, screen->root), 0);
+    if (!pointer) return;
+    const int16_t diffx = pointer->root_x - *x;
+    const int16_t diffy = pointer->root_y - *y;
+    free(pointer);
+    *x += diffx;
+    *y += diffy;
+
+    // Update geometry and prepare values for moving or resizing
+    uint16_t value_mask;
+    uint32_t value_list[2];
+    if (button == 1) // Move
+    {
+        geom->x += diffx;
+        geom->y += diffy;
+        value_mask = XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y;
+        value_list[0] = geom->x;
+        value_list[1] = geom->y;
+    }
+    else // Resize
+    {
+        // Prevent underflow and require a minimum size of 32x32
+        if (geom->width + diffx < 32)
+            geom->width = 32;
+        else
+            geom->width += diffx;
+        if (geom->height + diffx < 32)
+            geom->height = 32;
+        else
+            geom->height += diffy;
+        value_mask = XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
+        value_list[0] = geom->width;
+        value_list[1] = geom->height;
+    }
+
+    // Performs moving or resizing based on values set
+    xcb_configure_window(dpy, window, value_mask, value_list);
+}
+
+// Replace the phony window with the real one, and complete the resize
+void replace_window(xcb_window_t window, xcb_window_t phony, const xcb_get_geometry_reply_t *geom)
+{
+    xcb_destroy_window(dpy, phony);
+    const uint16_t value_mask = XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
+    const uint32_t value_list[] = { geom->width, geom->height };
+    xcb_configure_window(dpy, window, value_mask, value_list);
+    xcb_map_window(dpy, window);
+    raise_window(window);
+}
+
+// Handle mouse button press event by handling motion and release events
+void button_press(xcb_button_press_event_t *e)
+{
+    // Record initial window geometry
+    xcb_get_geometry_reply_t *geom;
+    geom = xcb_get_geometry_reply(dpy, xcb_get_geometry(dpy, e->child), NULL);
+    if (!geom) return;
+
+    // If resizing, replace with an opaque window to prevent sluggish redrawing while in motion
+    xcb_window_t window;
+    if (e->detail == 1) // Move
+    {
+        window = e->child;
+    }
+    else
+    {
+        window = duplicate_window(e->child, geom);
+        xcb_unmap_window(dpy, e->child);
+        xcb_map_window(dpy, window);
+    }
+
+    raise_window(window);
+
+    // Listen for motion and button release events
+    xcb_grab_pointer(dpy, 0, screen->root, XCB_EVENT_MASK_BUTTON_RELEASE
+        | XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_POINTER_MOTION_HINT, 
+        XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME);
+
+    // Record initial pointer location
+    xcb_query_pointer_reply_t *pointer;
+    pointer = xcb_query_pointer_reply(dpy, xcb_query_pointer(dpy, screen->root), 0);
+    if (!pointer) return;
+    int16_t x = pointer->root_x;
+    int16_t y = pointer->root_y;
+    free(pointer);
+
+    // Update the window as motion is made and button is released
+    int done = 0;
+    do
+    {
+        xcb_flush(dpy);
+        xcb_generic_event_t *ev = xcb_wait_for_event(dpy);
+
+        switch (ev->response_type & ~0x80)
+	{
+        case XCB_MOTION_NOTIFY:
+            motion_notify(window, e->detail, geom, &x, &y);
+            break;
+
+        case XCB_BUTTON_RELEASE:
+            xcb_ungrab_pointer(dpy, XCB_CURRENT_TIME);
+            if (e->detail != 1) replace_window(e->child, window, geom);
+            done = 1;
+            break;
+        }
+    } while (!done);
+
+    free(geom);
+}
+
+// Handle key press by raising the window, the only action available
+void key_press(xcb_key_press_event_t *e)
+{
+    raise_window(e->child);
+}
+
+// Initialize and run the main event loop
+int main(void)
+{
+    setup();
 
     for (;;)
     {
-        ev = xcb_wait_for_event(dpy);
-        switch (ev->response_type & ~0x80) {
-        
+        xcb_flush(dpy);
+
+        xcb_generic_event_t *ev = xcb_wait_for_event(dpy);
+        switch (ev->response_type & ~0x80)
+	{
+        case XCB_KEY_PRESS:
+            key_press((xcb_key_press_event_t *) ev);
+            break;
         case XCB_BUTTON_PRESS:
-        {
-            xcb_button_press_event_t *e;
-            e = ( xcb_button_press_event_t *) ev;
-			win = e->child; 
-            values[0] = XCB_STACK_MODE_ABOVE;
-    		xcb_configure_window(dpy, win, XCB_CONFIG_WINDOW_STACK_MODE, values);
- 			geom = xcb_get_geometry_reply(dpy, xcb_get_geometry(dpy, win), NULL);
-			if (1 == e->detail) {
-				values[2] = 1; 
-				xcb_warp_pointer(dpy, XCB_NONE, win, 0, 0, 0, 0, 1, 1);
-			} else {
-				values[2] = 3; 
-				xcb_warp_pointer(dpy, XCB_NONE, win, 0, 0, 0, 0, geom->width, geom->height);
-			}
-   			 xcb_grab_pointer(dpy, 0, screen->root, XCB_EVENT_MASK_BUTTON_RELEASE
-       				 | XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_POINTER_MOTION_HINT, 
-       				 XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME);
-			xcb_flush(dpy);
+            button_press((xcb_button_press_event_t *) ev);
+            break;
         }
-        break;
-
-        case XCB_MOTION_NOTIFY:
-        {
-            xcb_query_pointer_reply_t *pointer;
-            pointer = xcb_query_pointer_reply(dpy, xcb_query_pointer(dpy, screen->root), 0);
-            if (values[2] == 1) {/* move */
-               	geom = xcb_get_geometry_reply(dpy, xcb_get_geometry(dpy, win), NULL);
-				values[0] = (pointer->root_x + geom->width > screen->width_in_pixels)?
-					(screen->width_in_pixels - geom->width):pointer->root_x;
-    			values[1] = (pointer->root_y + geom->height > screen->height_in_pixels)?
-					(screen->height_in_pixels - geom->height):pointer->root_y;
-				xcb_configure_window(dpy, win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
-				xcb_flush(dpy);
-            } else if (values[2] == 3) { /* resize */
-				geom = xcb_get_geometry_reply(dpy, xcb_get_geometry(dpy, win), NULL);
-				values[0] = pointer->root_x - geom->x;
-				values[1] = pointer->root_y - geom->y;
-				xcb_configure_window(dpy, win, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
-				xcb_flush(dpy);
-            }
-        }
-        break;
-
-        case XCB_BUTTON_RELEASE:
-			xcb_ungrab_pointer(dpy, XCB_CURRENT_TIME);
-			xcb_flush(dpy); 
-        break;
-        }
-	}
-
-return 0;
+        free(ev);
+    }
 }
