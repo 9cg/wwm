@@ -7,8 +7,8 @@ int main (int argc, char **argv)
 
 	xcb_connection_t *dpy;
 	xcb_screen_t *screen;
-    xcb_drawable_t win;
-    xcb_drawable_t root;
+	xcb_drawable_t win;
+	xcb_drawable_t root;
 
 	xcb_generic_event_t *ev;
 	xcb_get_geometry_reply_t *geom;
